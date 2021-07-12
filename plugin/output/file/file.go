@@ -33,6 +33,8 @@ type Plugin struct {
 	fileExtension string
 	fileName      string
 
+	AdditionalFunc func(string) ()
+
 	mu *sync.RWMutex
 }
 
@@ -200,6 +202,8 @@ func (p *Plugin) write(data []byte) {
 }
 
 func (p *Plugin) createNew() {
+	fmt.Println("perm", os.FileMode(p.config.FileMode_).String())
+	fmt.Println(p.config.FileMode)
 	file, err := os.OpenFile(p.config.TargetFile, os.O_CREATE|os.O_APPEND|os.O_RDWR, os.FileMode(p.config.FileMode_))
 	if err != nil {
 		p.logger.Panicf("could not open or create file: %s, error: %s", p.config.TargetFile, err.Error())
@@ -216,7 +220,8 @@ func (p *Plugin) sealUp() {
 	if info.Size() == 0 {
 		return
 	}
-	p.rename()
+	newFileName := filepath.Join(p.targetDir, fmt.Sprintf("%s%s%d%s%s%s", p.fileName, fileNameSeparator, p.idx, fileNameSeparator, time.Now().Format(p.config.Layout), p.fileExtension))
+	p.rename(newFileName)
 	oldFile := p.file
 	p.mu.Lock()
 	p.createNew()
@@ -225,11 +230,15 @@ func (p *Plugin) sealUp() {
 	if err := oldFile.Close(); err != nil {
 		p.logger.Panicf("could not close file: %s, error: %s", oldFile.Name(), err.Error())
 	}
+
+	if p.AdditionalFunc != nil {
+		fmt.Println("call additional func from sela up")
+		p.AdditionalFunc(newFileName)
+	}
 }
 
-func (p *Plugin) rename() {
-	fullFileName := filepath.Join(p.targetDir, fmt.Sprintf("%s%s%d%s%s%s", p.fileName, fileNameSeparator, p.idx, fileNameSeparator, time.Now().Format(p.config.Layout), p.fileExtension))
-	if err := os.Rename(p.config.TargetFile, fullFileName); err != nil {
+func (p *Plugin) rename(newFileName string ) {
+	if err := os.Rename(p.config.TargetFile, newFileName); err != nil {
 		p.logger.Panicf("could not rename file, error: %s", err.Error())
 	}
 	p.idx++
