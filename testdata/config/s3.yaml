@@ -1,0 +1,24 @@
+pipelines:
+  test:
+    settings:
+      processors_count: 1
+    input:
+      type: file
+      persistence_mode: async
+      watching_dir: ./testdata/json/
+      offsets_file: SOME_FILE
+      offsets_op: reset
+    output:
+#      type: file
+      type: s3
+      endpoint: prod.s3.ceph.s.o3.ru:7480
+      accessKey: RFNOAUV6E94E6C2PH5WZ
+      secretKey: D8NKrdipvHFaX6vd2aXv3r3rdvvvsIgU0JeNy9o3
+      bucket: thanos-receiver-labels
+      secure: false
+
+      target_file: "./tmp/mkk.log"
+      retention_interval: 1m
+      batch_flush_timeout: 1s
+      time_layout: "01-02-2006_15"
+      file_mode: "0777"

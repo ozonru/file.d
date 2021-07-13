@@ -202,8 +202,6 @@ func (p *Plugin) write(data []byte) {
 }
 
 func (p *Plugin) createNew() {
-	fmt.Println("perm", os.FileMode(p.config.FileMode_).String())
-	fmt.Println(p.config.FileMode)
 	file, err := os.OpenFile(p.config.TargetFile, os.O_CREATE|os.O_APPEND|os.O_RDWR, os.FileMode(p.config.FileMode_))
 	if err != nil {
 		p.logger.Panicf("could not open or create file: %s, error: %s", p.config.TargetFile, err.Error())
@@ -213,6 +211,7 @@ func (p *Plugin) createNew() {
 
 //sealUp manages current file: renames, closes, and creates new.
 func (p *Plugin) sealUp() {
+	fmt.Println("sealing up")
 	info, err := p.file.Stat()
 	if err != nil {
 		p.logger.Panicf("could not get info about file: %s, error: %s", p.file.Name(), err.Error())
@@ -232,8 +231,7 @@ func (p *Plugin) sealUp() {
 	}
 
 	if p.AdditionalFunc != nil {
-		fmt.Println("call additional func from sela up")
-		p.AdditionalFunc(newFileName)
+		go p.AdditionalFunc(newFileName)
 	}
 }
 
