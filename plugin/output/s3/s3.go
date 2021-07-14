@@ -21,9 +21,10 @@ import (
 
 const (
 	compressedExtension = ".zip"
-	fileNameSeparator = "_"
-	attemptIntervalMin = 1 * time.Second
+	fileNameSeparator   = "_"
+	attemptIntervalMin  = 1 * time.Second
 )
+
 var (
 	options = minio.PutObjectOptions{
 		ContentType: "application/zip",
@@ -38,15 +39,18 @@ type objectStoreClient interface {
 }
 
 type Plugin struct {
-	controller   pipeline.OutputPluginController
-	logger       *zap.SugaredLogger
-	config       *Config
-	client       objectStoreClient
-	outPlugin    *file.Plugin
+	controller pipeline.OutputPluginController
+	logger     *zap.SugaredLogger
+	config     *Config
+	client     objectStoreClient
+	outPlugin  *file.Plugin
 
 	targetDir     string
 	fileExtension string
 	fileName      string
+
+	zipCh    chan string
+	uploadCh chan string
 
 	mu *sync.RWMutex
 }
@@ -111,6 +115,13 @@ func (p *Plugin) Start(config pipeline.AnyConfig, params *pipeline.OutputPluginP
 	p.fileExtension = filepath.Ext(f)
 	p.fileName = f[0 : len(f)-len(p.fileExtension)]
 
+	p.uploadCh = make(chan string, p.config.WorkersCount_)
+	p.zipCh = make(chan string, p.config.WorkersCount_)
+
+	for i := 0; i < p.config.WorkersCount_; i++ {
+		go p.uploadWork()
+		go p.zipWork()
+	}
 	// Initialize minio client object.
 	//minioClient, err := minio.New(p.config.Endpoint, p.config.AccessKey, p.config.SecretAccessKey, p.config.Secure)
 	//if err != nil {
@@ -137,11 +148,11 @@ func (p *Plugin) Start(config pipeline.AnyConfig, params *pipeline.OutputPluginP
 	p.outPlugin.AdditionalFunc = p.manageFile
 
 	p.outPlugin.Start(p.getConfig(), params)
-	go p.attemptSending()
+	p.uploadExistedFiles()
 }
 
 // getConfig returns file config that was created by data in p.config
-func (p *Plugin) getConfig() *file.Config{
+func (p *Plugin) getConfig() *file.Config {
 	return &file.Config{
 		TargetFile:         p.config.TargetFile,
 		RetentionInterval:  p.config.RetentionInterval,
@@ -171,49 +182,27 @@ func (p *Plugin) Out(event *pipeline.Event) {
 	p.outPlugin.Out(event)
 }
 
-func (p *Plugin) attemptSending() {
-	for {
-		fmt.Println("call upload from attemp sending")
-		if p.uploadExistedFiles() == 0 {
-			attemptInterval = attemptIntervalMin
-		}
-		//increase time interval exponentially
-		attemptInterval+=attemptInterval
-		time.Sleep(attemptInterval)
-	}
-}
-
-// mb upload several files into one archive?
-
 // uploadFiles get files from dirs, sorts it and then upload to s3 as zip
-func (p *Plugin) uploadExistedFiles() int {
+func (p *Plugin) uploadExistedFiles() {
 	//compress all files that we have in the dir
-	p.compressFilesInDir()
-	failed := 0
+	p.zipFilesInDir()
 	// get all zip files
 	pattern := fmt.Sprintf("%s*%s", p.targetDir, compressedExtension)
-	files, err := filepath.Glob(pattern)
-
+	zips, err := filepath.Glob(pattern)
 	if err != nil {
 		p.logger.Panicf("could not read dir: %s", p.targetDir)
 	}
-
 	//sort zip by data
-	sort.Slice(files, p.getSortFunc(files))
-
+	sort.Slice(zips, p.getSortFunc(zips))
 	//upload archive
-	for _, f := range files {
-		fmt.Print(f + " ")
-		if err := p.uploadZip(f); err != nil {
-			failed++
-		}
+	for _, z := range zips {
+		fmt.Print(z + " ")
+		p.uploadCh <- z
 	}
-	return failed
 }
 
-
-//compressFilesInDir compresses all files in dir
-func (p *Plugin) compressFilesInDir() {
+//zipFilesInDir compresses all files in dir
+func (p *Plugin) zipFilesInDir() {
 	pattern := fmt.Sprintf("%s/%s%s*%s*%s", p.targetDir, p.fileName, fileNameSeparator, fileNameSeparator, p.fileExtension)
 	files, err := filepath.Glob(pattern)
 
@@ -224,8 +213,8 @@ func (p *Plugin) compressFilesInDir() {
 	//sort zip by data
 	sort.Slice(files, p.getSortFunc(files))
 	for _, f := range files {
-		archiveName := fmt.Sprintf("%s.zip", f)
-		p.createZip(archiveName, f)
+		zipName := fmt.Sprintf("%s.zip", f)
+		p.createZip(zipName, f)
 	}
 }
 
@@ -248,15 +237,33 @@ func (p *Plugin) getSortFunc(files []string) func(i, j int) bool {
 func (p *Plugin) manageFile(fileName string) {
 	fmt.Println("colled after sealing up")
 	fmt.Println("fileName-> ", fileName)
-	zipName := fmt.Sprintf("%s.zip", fileName)
-	fmt.Println("archiveName-> ", zipName)
+	p.zipCh <- fileName
+}
 
-	//compress
-	p.createZip(zipName, fileName)
+func (p *Plugin) uploadWork() {
+	for zipName := range p.uploadCh {
+		go func(z string) {
+			sleepTime := attemptInterval
+			for {
+				err := p.uploadZip(z)
+				if err == nil {
+					break
+				}
+				p.logger.Errorf("could not upload zip: %s, error: %s", z, err.Error())
+				sleepTime += sleepTime
+				time.Sleep(sleepTime)
+			}
+		}(zipName)
+	}
+}
 
-	//upload archive
-	if err := p.uploadZip(zipName); err != nil {
-		p.logger.Error(err)
+func (p *Plugin) zipWork() {
+	for fileName := range p.zipCh {
+		go func(f string) {
+			zipName := fmt.Sprintf("%s.zip", f)
+			p.createZip(zipName, f)
+			p.uploadCh <- zipName
+		}(fileName)
 	}
 }
 
@@ -282,7 +289,7 @@ func (p *Plugin) uploadZip(name string) error {
 }
 
 // add file to zip and remove original file
-func (p *Plugin) createZip(archiveName string, fileNames ...string) {
+func (p *Plugin) createZip(archiveName string, fileName string) {
 	fmt.Println("zip name: ", archiveName)
 	newZipFile, err := os.Create(archiveName)
 	if err != nil {
@@ -291,14 +298,12 @@ func (p *Plugin) createZip(archiveName string, fileNames ...string) {
 	defer newZipFile.Close()
 	zipWriter := zip.NewWriter(newZipFile)
 	defer zipWriter.Close()
-	for _, f := range fileNames {
-		p.addFileToZip(zipWriter, f)
-		//delete old file
-		if err := os.Remove(f); err != nil {
-			p.logger.Panicf("could not delete file: %s, error: %s", f, err.Error())
-		}
-	}
 
+	p.addFileToZip(zipWriter, fileName)
+	//delete old file
+	if err := os.Remove(fileName); err != nil {
+		p.logger.Panicf("could not delete file: %s, error: %s", fileName, err.Error())
+	}
 }
 
 func (p *Plugin) addFileToZip(zipWriter *zip.Writer, filename string) {
