@@ -211,7 +211,6 @@ func (p *Plugin) createNew() {
 
 //sealUp manages current file: renames, closes, and creates new.
 func (p *Plugin) sealUp() {
-	fmt.Println("sealing up")
 	info, err := p.file.Stat()
 	if err != nil {
 		p.logger.Panicf("could not get info about file: %s, error: %s", p.file.Name(), err.Error())

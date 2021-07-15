@@ -20,5 +20,5 @@ pipelines:
       target_file: "./tmp/mkk.log"
       retention_interval: 1m
       batch_flush_timeout: 1s
-      time_layout: "01-02-2006_15"
+      time_layout: "01"
       file_mode: "0777"
